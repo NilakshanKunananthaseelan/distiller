@@ -26,6 +26,8 @@ import torch.nn as nn
 from . import cifar10 as cifar10_models
 from . import mnist as mnist_models
 from . import imagenet as imagenet_extra_models
+from . import imagenet_tf2torch as imagenet_tf2torch_models
+
 import pretrainedmodels
 
 from distiller.utils import set_model_input_shape_attr, model_setattr
@@ -34,12 +36,12 @@ from distiller.modules import Mean, EltwiseAdd
 import logging
 msglogger = logging.getLogger()
 
-SUPPORTED_DATASETS = ('imagenet', 'cifar10', 'mnist')
+SUPPORTED_DATASETS = ('imagenet', 'cifar10', 'mnist','imagenet_unnormalized')
 
 # ResNet special treatment: we have our own version of ResNet, so we need to over-ride
 # TorchVision's version.
 RESNET_SYMS = ('ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152',
-               'resnext50_32x4d', 'resnext101_32x8d', 'wide_resnet50_2', 'wide_resnet101_2')
+               'resnext50_32x4d', 'resnext101_32x8d', 'wide_resnet50_2', 'wide_resnet101_2','resnet50_tf2_torch')
 
 TORCHVISION_MODEL_NAMES = sorted(
                             name for name in torch_models.__dict__
@@ -52,6 +54,10 @@ IMAGENET_MODEL_NAMES.extend(sorted(name for name in imagenet_extra_models.__dict
                                    and callable(imagenet_extra_models.__dict__[name])))
 IMAGENET_MODEL_NAMES.extend(pretrainedmodels.model_names)
 
+IMAGENET_TF2TORCH_MODEL_NAMES = sorted(name for name in imagenet_tf2torch_models.__dict__
+                                   if name.islower() and not name.startswith("__")
+                                   and callable(imagenet_tf2torch_models.__dict__[name]))
+
 CIFAR10_MODEL_NAMES = sorted(name for name in cifar10_models.__dict__
                              if name.islower() and not name.startswith("__")
                              and callable(cifar10_models.__dict__[name]))
@@ -61,7 +67,7 @@ MNIST_MODEL_NAMES = sorted(name for name in mnist_models.__dict__
                            and callable(mnist_models.__dict__[name]))
 
 ALL_MODEL_NAMES = sorted(map(lambda s: s.lower(),
-                            set(IMAGENET_MODEL_NAMES + CIFAR10_MODEL_NAMES + MNIST_MODEL_NAMES)))
+                            set(IMAGENET_MODEL_NAMES + CIFAR10_MODEL_NAMES + MNIST_MODEL_NAMES+IMAGENET_TF2TORCH_MODEL_NAMES)))
 
 
 def patch_torchvision_mobilenet_v2(model):
@@ -127,6 +133,9 @@ def create_model(pretrained, dataset, arch, parallel=True, device_ids=None):
     try:
         if dataset == 'imagenet':
             model, cadene = _create_imagenet_model(arch, pretrained)
+        #for tf2 -> pytorch tranlsted model
+        elif dataset == 'imagenet_unnormalized':
+            model, cadene = _create_imagenet_unnormalized_model(arch, pretrained)
         elif dataset == 'cifar10':
             model = _create_cifar10_model(arch, pretrained)
         elif dataset == 'mnist':
@@ -187,6 +196,42 @@ def _create_imagenet_model(arch, pretrained):
                 raise
     if model is None and (arch in imagenet_extra_models.__dict__) and not pretrained:
         model = imagenet_extra_models.__dict__[arch]()
+    if model is None and (arch in pretrainedmodels.model_names):
+        cadene = True
+        model = pretrainedmodels.__dict__[arch](
+            num_classes=1000,
+            pretrained=(dataset if pretrained else None))
+    if model is None:
+        error_message = ''
+        if arch not in IMAGENET_MODEL_NAMES:
+            error_message = "Model {} is not supported for dataset ImageNet".format(arch)
+        elif pretrained:
+            error_message = "Model {} (ImageNet) does not have a pretrained model".format(arch)
+        raise ValueError(error_message or 'Failed to find model {}'.format(arch))
+    return model, cadene
+
+def _create_imagenet_unnormalized_model(arch, pretrained):
+    dataset = "imagenet_unnormalized"
+    cadene = False
+    model = None
+    if arch in RESNET_SYMS:
+        model = imagenet_tf2torch_models.__dict__[arch](pretrained=pretrained)
+    elif arch in TORCHVISION_MODEL_NAMES:
+        try:
+            if is_inception(arch):
+                model = getattr(torch_models, arch)(pretrained=pretrained, transform_input=False)
+            else:
+                model = getattr(torch_models, arch)(pretrained=pretrained)
+            if arch == "mobilenet_v2":
+                patch_torchvision_mobilenet_v2(model)
+
+        except NotImplementedError:
+            # In torchvision 0.3, trying to download a model that has no
+            # pretrained image available will raise NotImplementedError
+            if not pretrained:
+                raise
+    if model is None and (arch in imagenet_tf2torch_models.__dict__) and not pretrained:
+        model = imagenet_tf2torch_models.__dict__[arch]()
     if model is None and (arch in pretrainedmodels.model_names):
         cadene = True
         model = pretrainedmodels.__dict__[arch](
