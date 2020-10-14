@@ -29,7 +29,7 @@ import numpy as np
 import distiller
 
 
-DATASETS_NAMES = ['imagenet', 'cifar10', 'mnist']
+DATASETS_NAMES = ['imagenet', 'cifar10', 'mnist','imagenet_unnormalized']
 
 
 def classification_dataset_str_from_arch(arch):
@@ -37,6 +37,8 @@ def classification_dataset_str_from_arch(arch):
         dataset = 'cifar10' 
     elif 'mnist' in arch:
         dataset = 'mnist' 
+    elif 'tf2torch' in arch:
+        dataset = 'imagenet_unnormalized'
     else:
         dataset = 'imagenet'
     return dataset
@@ -45,11 +47,12 @@ def classification_dataset_str_from_arch(arch):
 def classification_num_classes(dataset):
     return {'cifar10': 10,
             'mnist': 10,
-            'imagenet': 1000}.get(dataset, None)
+            'imagenet': 1000,
+             'imagenet_unnormalized':1000}.get(dataset, None)
 
 
 def classification_get_input_shape(dataset):
-    if dataset == 'imagenet':
+    if dataset == 'imagenet' or dataset=='imagenet_unnormalized':
         return 1, 3, 224, 224
     elif dataset == 'cifar10':
         return 1, 3, 32, 32
@@ -62,7 +65,9 @@ def classification_get_input_shape(dataset):
 def __dataset_factory(dataset, arch):
     return {'cifar10': cifar10_get_datasets,
             'mnist': mnist_get_datasets,
-            'imagenet': partial(imagenet_get_datasets, arch=arch)}.get(dataset, None)
+            'imagenet': partial(imagenet_get_datasets, arch=arch),
+            'imagenet_unnormalized': partial(imagenet_unnormalized_get_datasets, arch=arch)
+            }.get(dataset, None)
 
 
 def load_data(dataset, arch, data_dir,
@@ -203,6 +208,49 @@ def imagenet_get_datasets(data_dir, arch, load_train=True, load_test=True):
             transforms.CenterCrop(crop),
             transforms.ToTensor(),
             normalize,
+        ])
+
+        test_dataset = datasets.ImageFolder(test_dir, test_transform)
+
+    return train_dataset, test_dataset
+
+
+def imagenet_unnormalized_get_datasets(data_dir, arch, load_train=True, load_test=True):
+    """
+    Load the ImageNet dataset for tf2 torch translation.
+    """
+    # Inception Network accepts image of size 3, 299, 299
+    if distiller.models.is_inception(arch):
+        resize, crop = 336, 299
+    else:
+        resize, crop = 256, 224
+    if arch == 'googlenet':
+        normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5],
+                                         std=[0.5, 0.5, 0.5])
+    else:
+        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                         std=[0.229, 0.224, 0.225])
+    train_dir = os.path.join(data_dir, 'train')
+    test_dir = os.path.join(data_dir, 'val')
+
+    train_dataset = None
+    if load_train:
+        train_transform = transforms.Compose([
+            transforms.RandomResizedCrop(crop),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            #normalize, TF doesn't do this
+        ])
+
+        train_dataset = datasets.ImageFolder(train_dir, train_transform)
+
+    test_dataset = None
+    if load_test:
+        test_transform = transforms.Compose([
+            transforms.Resize(resize),
+            transforms.CenterCrop(crop),
+            transforms.ToTensor(),
+            #normalize,
         ])
 
         test_dataset = datasets.ImageFolder(test_dir, test_transform)
